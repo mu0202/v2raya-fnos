@@ -1,0 +1,41 @@
+#!/bin/bash
+# Called BEFORE installation. Validate the target platform; never install on a
+# mismatched system. Idempotent: safe to re-run.
+set -u
+
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+ARCH="${TRIM_SYS_ARCH:-}"
+OS_VER="${TRIM_SYS_VERSION:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+case "${ARCH}" in
+    x86_64|amd64|x86)
+        ;;
+    "")
+        fail "cannot determine system architecture (TRIM_SYS_ARCH is empty)"
+        ;;
+    *)
+        fail "unsupported architecture: ${ARCH} (this package is x86_64 only)"
+        ;;
+esac
+
+# os_min_version is 1.1.3100; only compare when a version is actually reported.
+if [ -n "${OS_VER}" ]; then
+    min="1.1.3100"
+    # Pure-bash version compare via sort -V, which is available on fnOS.
+    if command -v sort >/dev/null 2>&1; then
+        lowest=$(printf '%s\n%s\n' "${min}" "${OS_VER}" | sort -V 2>/dev/null | head -n 1)
+        if [ "${lowest}" != "${min}" ]; then
+            fail "fnOS ${OS_VER} is older than the required minimum ${min}"
+        fi
+    fi
+fi
+
+exit 0

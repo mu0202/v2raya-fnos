@@ -1,0 +1,46 @@
+#!/bin/bash
+# Called AFTER uninstall. Honours the uninstall wizard's data choice:
+#   wizard_delete_data = "true"  -> remove $TRIM_PKGVAR (irreversible)
+#   anything else                -> keep user data for a future reinstall
+# Idempotent.
+set -u
+
+PKGVAR="${TRIM_PKGVAR:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+APPDEST="${TRIM_APPDEST:-}"
+DELETE_DATA="${wizard_delete_data:-false}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+# The socket lives in the app directory, which the installer removes; drop it
+# explicitly so no stale socket survives.
+if [ -n "${APPDEST}" ] && [ -S "${APPDEST}/app.sock" ]; then
+    rm -f "${APPDEST}/app.sock" 2>/dev/null || true
+fi
+
+if [ "${DELETE_DATA}" = "true" ]; then
+    if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+        # Refuse to recurse on anything that is not plausibly our own data dir.
+        case "${PKGVAR}" in
+            /|/vol|/vol[0-9]|/vol[0-9]/|/vol[0-9]/@appdata|/vol[0-9]/@appdata/)
+                fail "refusing to delete suspicious path: ${PKGVAR}" ;;
+        esac
+        rm -rf "${PKGVAR}" || fail "failed to remove data directory ${PKGVAR}"
+    fi
+else
+    if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+        # Remove the runtime pidfile/socket leftovers but keep the user database.
+        rm -f "${PKGVAR}/app.pid" 2>/dev/null || true
+        printf '%s - uninstall_callback: user data kept in %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "${PKGVAR}" \
+            >> "${PKGVAR}/main.log" 2>/dev/null || true
+    fi
+fi
+
+exit 0

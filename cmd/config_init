@@ -1,0 +1,35 @@
+#!/bin/bash
+# Called BEFORE the settings page is shown. Make sure the durable config exists
+# and expose its current values to the wizard as defaults. Idempotent.
+set -u
+
+PKGVAR="${TRIM_PKGVAR:-}"
+PKGETC="${TRIM_PKGETC:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${PKGVAR}" ] || fail "TRIM_PKGVAR is not set"
+[ -n "${PKGETC}" ] || PKGETC="${PKGVAR}/etc"
+CONF="${PKGETC}/v2raya.conf"
+
+mkdir -p "${PKGETC}" || fail "cannot create ${PKGETC}"
+
+if [ ! -f "${CONF}" ]; then
+    printf 'log_level=info\nipv6_support=auto\n' > "${CONF}" 2>/dev/null \
+        || fail "cannot write default config ${CONF}"
+fi
+for kv in 'log_level=info' 'ipv6_support=auto'; do
+    key="${kv%%=*}"
+    if ! grep -q "^${key}=" "${CONF}" 2>/dev/null; then
+        printf '%s\n' "${kv}" >> "${CONF}" 2>/dev/null || true
+    fi
+done
+
+exit 0

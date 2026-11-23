@@ -1,0 +1,62 @@
+#!/bin/bash
+# Called AFTER installation. Create the data layout and a default config.
+# Must not touch the network. Idempotent.
+set -u
+
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+PKGETC="${TRIM_PKGETC:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${APPDEST}" ] || fail "TRIM_APPDEST is not set"
+[ -n "${PKGVAR}" ] || fail "TRIM_PKGVAR is not set"
+[ -n "${PKGETC}" ] || PKGETC="${PKGVAR}/etc"
+
+CONF="${PKGETC}/v2raya.conf"
+
+# Data dirs: v2rayA stores its sqlite database under --config.
+mkdir -p "${PKGVAR}/data" "${PKGVAR}/logs" "${PKGETC}" \
+    || fail "cannot create data directories under ${PKGVAR}"
+
+# Ship the geo assets into the data volume as well (contract §6.1) so they are
+# visible for backup. A plain symlink to the read-only app dir is enough.
+# -sfn so a dangling symlink left by a previous "keep data" uninstall is
+# replaced instead of silently blocking recreation (see cmd/main comment).
+ln -sfn "${APPDEST}/assets" "${PKGVAR}/assets" 2>/dev/null \
+    || printf 'v2rayA: warning: could not create assets symlink\n' >&2
+
+# Defaults for the two settings the settings page exposes. Written only when
+# absent so re-installing/upgrading never clobbers a user's choice.
+if [ ! -f "${CONF}" ]; then
+    {
+        printf 'log_level=info\n'
+        printf 'ipv6_support=auto\n'
+        printf ''
+    } > "${CONF}" 2>/dev/null || fail "cannot write default config ${CONF}"
+fi
+
+# Make sure the required keys exist even if the file came from an older version.
+for kv in 'log_level=info' 'ipv6_support=auto'; do
+    key="${kv%%=*}"
+    if ! grep -q "^${key}=" "${CONF}" 2>/dev/null; then
+        printf '%s\n' "${kv}" >> "${CONF}" 2>/dev/null || true
+    fi
+done
+
+# Verify the bundled binaries and assets actually made it through the install.
+for f in "${APPDEST}/server/v2raya" "${APPDEST}/server/v2raya_core"; do
+    [ -x "${f}" ] || fail "required binary missing or not executable: ${f}"
+done
+for f in "${APPDEST}/assets/geoip.dat" "${APPDEST}/assets/geosite.dat" "${APPDEST}/assets/LoyalsoldierSite.dat"; do
+    [ -f "${f}" ] || fail "required asset missing: ${f}"
+done
+
+exit 0

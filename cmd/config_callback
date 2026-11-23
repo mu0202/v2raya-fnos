@@ -1,0 +1,82 @@
+#!/bin/bash
+# Called AFTER the settings page is submitted. Validate the two exposed settings,
+# persist them, and restart the daemon so they take effect.
+#
+# Consumed fields (wizard/config): wizard_log_level, wizard_ipv6_support.
+# Idempotent: submitting the same values just rewrites the file and restarts.
+set -u
+
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+PKGETC="${TRIM_PKGETC:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+
+log_msg() {
+    if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+        printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" \
+            >> "${PKGVAR}/main.log" 2>/dev/null || true
+    fi
+}
+
+fail() {
+    log_msg "config_callback ERROR: $1"
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${PKGVAR}" ] || fail "TRIM_PKGVAR is not set"
+[ -n "${PKGETC}" ] || PKGETC="${PKGVAR}/etc"
+CONF="${PKGETC}/v2raya.conf"
+
+# Existing values are the fallback when a field is not submitted.
+conf_value() {
+    local key="$1" default="$2" val=""
+    if [ -r "${CONF}" ]; then
+        val=$(sed -n "s/^${key}=//p" "${CONF}" 2>/dev/null | head -n 1)
+    fi
+    if [ -z "${val}" ]; then printf '%s' "${default}"; else printf '%s' "${val}"; fi
+}
+
+log_level="${wizard_log_level:-$(conf_value log_level info)}"
+ipv6_support="${wizard_ipv6_support:-$(conf_value ipv6_support auto)}"
+
+log_level=$(printf '%s' "${log_level}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+ipv6_support=$(printf '%s' "${ipv6_support}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+
+case "${log_level}" in
+    trace|debug|info|warn|error) ;;
+    *)
+        fail "无效的日志级别: '${log_level}'（可选 trace/debug/info/warn/error）" ;;
+esac
+case "${ipv6_support}" in
+    auto|on|off) ;;
+    *)
+        fail "无效的 IPv6 选项: '${ipv6_support}'（可选 auto/on/off）" ;;
+esac
+
+mkdir -p "${PKGETC}" || fail "cannot create ${PKGETC}"
+{
+    printf 'log_level=%s\n' "${log_level}"
+    printf 'ipv6_support=%s\n' "${ipv6_support}"
+} > "${CONF}.tmp" 2>/dev/null || fail "cannot write ${CONF}.tmp"
+mv -f "${CONF}.tmp" "${CONF}" 2>/dev/null || fail "cannot replace ${CONF}"
+
+log_msg "config_callback: log_level=${log_level} ipv6_support=${ipv6_support}"
+
+# Restart only when the service is supposed to be running, so a settings change
+# never resurrects a deliberately stopped app.
+MAIN="$(cd "$(dirname "${0}")" 2>/dev/null && pwd)/main"
+if [ -x "${MAIN}" ]; then
+    if "${MAIN}" status >/dev/null 2>&1; then
+        log_msg "config_callback: restarting to apply settings"
+        "${MAIN}" stop >/dev/null 2>&1 || true
+        "${MAIN}" start >/dev/null 2>&1 || fail "设置已保存，但重启 v2rayA 失败，请查看日志"
+    else
+        log_msg "config_callback: service not running, settings apply on next start"
+    fi
+fi
+
+exit 0

@@ -1,0 +1,71 @@
+[
+    {
+        "stepTitle": "运行设置",
+        "items": [
+            {
+                "type": "select",
+                "field": "wizard_log_level",
+                "label": "日志级别",
+                "initValue": "info",
+                "options": [
+                    {
+                        "label": "error（仅错误）",
+                        "value": "error"
+                    },
+                    {
+                        "label": "warn（警告及以上）",
+                        "value": "warn"
+                    },
+                    {
+                        "label": "info（推荐）",
+                        "value": "info"
+                    },
+                    {
+                        "label": "debug（调试）",
+                        "value": "debug"
+                    },
+                    {
+                        "label": "trace（最详细）",
+                        "value": "trace"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择日志级别"
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "field": "wizard_ipv6_support",
+                "label": "IPv6 支持",
+                "initValue": "auto",
+                "options": [
+                    {
+                        "label": "auto（自动，推荐）",
+                        "value": "auto"
+                    },
+                    {
+                        "label": "on（启用）",
+                        "value": "on"
+                    },
+                    {
+                        "label": "off（禁用）",
+                        "value": "off"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择 IPv6 支持方式"
+                    }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "保存后应用会自动重启以生效。应用以 root 运行，透明代理 / TUN / 局域网访问等全部由 v2rayA 自身的设置页管理，本页只控制飞牛侧的运行参数。"
+            }
+        ]
+    }
+]

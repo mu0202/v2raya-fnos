@@ -1,0 +1,57 @@
+#!/bin/bash
+# Called AFTER an upgrade. User data in $TRIM_PKGVAR/data is preserved; only
+# missing files are created. Version comparison is logged, not acted upon.
+# Idempotent.
+set -u
+
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+PKGETC="${TRIM_PKGETC:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+OLD_VER="${TRIM_OLD_APPVER:-}"
+NEW_VER="${TRIM_APPVER:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${APPDEST}" ] || fail "TRIM_APPDEST is not set"
+[ -n "${PKGVAR}" ] || fail "TRIM_PKGVAR is not set"
+[ -n "${PKGETC}" ] || PKGETC="${PKGVAR}/etc"
+CONF="${PKGETC}/v2raya.conf"
+
+# NOTE: $TRIM_PKGVAR/data (v2rayA's sqlite database) is deliberately left alone.
+mkdir -p "${PKGVAR}/data" "${PKGVAR}/logs" "${PKGETC}" \
+    || fail "cannot create data directories under ${PKGVAR}"
+
+# -sfn: repair a dangling assets symlink left behind by an uninstall that kept
+# data (see cmd/main comment).
+ln -sfn "${APPDEST}/assets" "${PKGVAR}/assets" 2>/dev/null || true
+
+if [ ! -f "${CONF}" ]; then
+    printf 'log_level=info\nipv6_support=auto\n' > "${CONF}" 2>/dev/null \
+        || fail "cannot write default config ${CONF}"
+fi
+for kv in 'log_level=info' 'ipv6_support=auto'; do
+    key="${kv%%=*}"
+    if ! grep -q "^${key}=" "${CONF}" 2>/dev/null; then
+        printf '%s\n' "${kv}" >> "${CONF}" 2>/dev/null || true
+    fi
+done
+
+for f in "${APPDEST}/server/v2raya" "${APPDEST}/server/v2raya_core"; do
+    [ -x "${f}" ] || fail "required binary missing or not executable: ${f}"
+done
+for f in "${APPDEST}/assets/geoip.dat" "${APPDEST}/assets/geosite.dat" "${APPDEST}/assets/LoyalsoldierSite.dat"; do
+    [ -f "${f}" ] || fail "required asset missing: ${f}"
+done
+
+printf '%s - upgrade_callback: upgrade complete %s -> %s (user data preserved)\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "${OLD_VER:-unknown}" "${NEW_VER:-unknown}" \
+    >> "${PKGVAR}/main.log" 2>/dev/null || true
+
+exit 0

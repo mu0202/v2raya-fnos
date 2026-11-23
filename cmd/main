@@ -1,0 +1,368 @@
+#!/bin/bash
+# v2rayA lifecycle entrypoint for fnOS: start | stop | status
+#
+# Design note
+# -----------
+# This script only does what v2rayA itself cannot do inside the fnOS package
+# sandbox. Everything else is left to v2rayA, because it already handles
+# transparent proxy, routing and DNS correctly:
+#
+#   * TUN device, policy routing (table 2020) and DNS interception are created
+#     by v2rayA / the core. We must not duplicate any of it.
+#   * `portSharing` only widens the SOCKS/HTTP inbounds to 0.0.0.0; it does not
+#     make this host a gateway for other machines.
+#   * In TUN mode the core intercepts plain DNS (port 53) that enters the TUN and
+#     forwards it to its own DNS module (see tunDnsTarget in v2rayA). So LAN
+#     clients can use any DNS server they like and still get the core's resolver;
+#     no port-53 redirect of our own is needed.
+#
+# This package adds NO features of its own. Anything v2rayA can do (transparent
+# proxy, TUN, routing, DNS, LAN access via portSharing) is left entirely to
+# v2rayA and configured in its own UI.
+#
+# status: exit 0 = running, exit 3 = not running (fnOS contract)
+
+set -u
+
+APPNAME="${TRIM_APPNAME:-v2raya}"
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+PKGETC="${TRIM_PKGETC:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+
+BASEURL="/app/v2raya"
+HEALTH_TIMEOUT=30
+STOP_TIMEOUT=10
+
+# ---------------------------------------------------------------------------
+# logging / errors
+# ---------------------------------------------------------------------------
+log_msg() {
+    if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+        printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" \
+            >> "${PKGVAR}/main.log" 2>/dev/null || true
+    fi
+}
+
+# Write a user-readable error to $TRIM_TEMP_LOGFILE, echo to stderr.
+fail() {
+    local msg="$1"
+    log_msg "ERROR: ${msg}"
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "${msg}" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "${msg}" >&2
+}
+
+require_env() {
+    local name="$1" value="$2"
+    if [ -z "${value}" ]; then
+        fail "missing required environment variable ${name}"
+        exit 1
+    fi
+}
+
+require_env TRIM_APPDEST "${APPDEST}"
+require_env TRIM_PKGVAR "${PKGVAR}"
+[ -n "${PKGETC}" ] || PKGETC="${PKGVAR}/etc"
+
+# ---------------------------------------------------------------------------
+# paths
+# ---------------------------------------------------------------------------
+BIN="${APPDEST}/server/v2raya"
+CORE="${APPDEST}/server/v2raya_core"
+ASSETS="${APPDEST}/assets"
+SOCK="${APPDEST}/app.sock"
+PIDFILE="${PKGVAR}/app.pid"
+DATADIR="${PKGVAR}/data"
+LOGDIR="${PKGVAR}/logs"
+LOGFILE="${LOGDIR}/v2raya.log"
+STDOUT_LOG="${LOGDIR}/v2raya.stdout.log"
+CONF="${PKGETC}/v2raya.conf"
+
+# ---------------------------------------------------------------------------
+# configuration (settings page -> config_callback -> v2raya.conf)
+# ---------------------------------------------------------------------------
+conf_value() {
+    local key="$1" default="$2" val=""
+    if [ -r "${CONF}" ]; then
+        val=$(sed -n "s/^${key}=//p" "${CONF}" 2>/dev/null | head -n 1)
+    fi
+    if [ -z "${val}" ]; then
+        printf '%s' "${default}"
+    else
+        printf '%s' "${val}"
+    fi
+}
+
+# Settings-page values arrive as wizard_* env vars; the conf file is the durable
+# record. Env wins when present so a fresh change applies before it is persisted.
+log_level=$(printf '%s' "${wizard_log_level:-$(conf_value log_level info)}" | tr '[:upper:]' '[:lower:]')
+ipv6_support=$(printf '%s' "${wizard_ipv6_support:-$(conf_value ipv6_support auto)}" | tr '[:upper:]' '[:lower:]')
+
+case "${log_level}" in
+    trace|debug|info|warn|error) ;;
+    *) log_msg "invalid log_level '${log_level}', falling back to info"; log_level="info" ;;
+esac
+case "${ipv6_support}" in
+    auto|on|off) ;;
+    *) log_msg "invalid ipv6_support '${ipv6_support}', falling back to auto"; ipv6_support="auto" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# process helpers (only /proc: no ps/ss/netstat dependency)
+# ---------------------------------------------------------------------------
+read_pidfile() {
+    [ -r "${PIDFILE}" ] || return 1
+    local pid
+    pid=$(head -n 1 "${PIDFILE}" 2>/dev/null | tr -dc '0-9')
+    [ -n "${pid}" ] || return 1
+    printf '%s' "${pid}"
+}
+
+# A recycled PID must not be mistaken for our daemon: the command line has to
+# reference our own binary path.
+pid_is_ours() {
+    local pid="$1"
+    [ -n "${pid}" ] || return 1
+    [ -d "/proc/${pid}" ] || return 1
+    [ -r "/proc/${pid}/cmdline" ] || return 1
+    tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -Fq -- "${BIN}"
+}
+
+# Every PID whose command line points at THIS install's socket. Scoped by the
+# per-install socket path, so it can never touch another app's process.
+pids_by_socket() {
+    local d c
+    for d in /proc/[0-9]*; do
+        [ -r "${d}/cmdline" ] || continue
+        c=$(tr '\0' ' ' < "${d}/cmdline" 2>/dev/null) || continue
+        case "${c}" in
+            *"--socket ${SOCK}"*) printf '%s\n' "${d##*/}" ;;
+        esac
+    done
+}
+
+status_running() {
+    local pid
+    if pid=$(read_pidfile) && pid_is_ours "${pid}"; then
+        return 0
+    fi
+    if [ -f "${PIDFILE}" ]; then
+        rm -f "${PIDFILE}" 2>/dev/null || true
+    fi
+    # pidfile missing/stale: recover from the process table (same install only)
+    for pid in $(pids_by_socket); do
+        printf '%s\n' "${pid}" > "${PIDFILE}" 2>/dev/null || true
+        log_msg "status: recovered pid ${pid} from process table"
+        return 0
+    done
+    return 1
+}
+
+# Kill only the pid we started; never pkill by name (a real v2rayA install on
+# the same machine shares the same argv[0]).
+kill_ours() {
+    local pid="$1" i=0
+    [ -n "${pid}" ] || return 0
+    pid_is_ours "${pid}" || return 0
+    kill -TERM "${pid}" 2>/dev/null || true
+    while [ "${i}" -lt $((STOP_TIMEOUT * 5)) ]; do
+        kill -0 "${pid}" 2>/dev/null || return 0
+        sleep 0.2
+        i=$((i + 1))
+    done
+    log_msg "stop: pid ${pid} ignored SIGTERM for ${STOP_TIMEOUT}s, sending SIGKILL"
+    kill -KILL "${pid}" 2>/dev/null || true
+    sleep 0.5
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# readiness
+# ---------------------------------------------------------------------------
+health_ok() {
+    [ -S "${SOCK}" ] || return 1
+    if ! command -v curl >/dev/null 2>&1; then
+        # Degraded mode: no curl, socket presence is the best we can assert.
+        return 0
+    fi
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+        --unix-socket "${SOCK}" "http://localhost${BASEURL}/api/version" 2>/dev/null) || return 1
+    [ "${code}" = "200" ]
+}
+
+wait_ready() {
+    local pid="$1" i=0
+    while [ "${i}" -lt "${HEALTH_TIMEOUT}" ]; do
+        if health_ok; then
+            return 0
+        fi
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            return 1
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# start
+# ---------------------------------------------------------------------------
+do_start() {
+    if status_running; then
+        log_msg "start: already running, nothing to do"
+        return 0
+    fi
+
+    if [ ! -x "${BIN}" ]; then
+        fail "main program missing or not executable: ${BIN}"
+        return 1
+    fi
+    if [ ! -x "${CORE}" ]; then
+        fail "v2ray-core binary missing or not executable: ${CORE}"
+        return 1
+    fi
+    # geoip.dat/geosite.dat: the core's geo rules. LoyalsoldierSite.dat must be in
+    # the same geosite wire format because v2rayA reads it as
+    # ext:LoyalsoldierSite.dat:<category> for GFWList mode.
+    for _asset in geoip.dat geosite.dat LoyalsoldierSite.dat; do
+        if [ ! -f "${ASSETS}/${_asset}" ]; then
+            fail "required asset missing: ${ASSETS}/${_asset}; refusing to start (v2rayA would try to download it from the network)"
+            return 1
+        fi
+    done
+
+    mkdir -p "${DATADIR}" "${LOGDIR}" "${PKGETC}" 2>/dev/null || {
+        fail "cannot create data directories under ${PKGVAR}"
+        return 1
+    }
+
+    # Expose the bundled assets through the data dir as well.
+    #
+    # ln -sfn, not `[ ! -e ] && ln -s`: a kept-data reinstall leaves a DANGLING
+    # symlink (data dir survives, @appcenter/<app> is deleted), and `-e` follows
+    # the link so it reports "absent" while the name is still taken -- plain
+    # `ln -s` then fails with "File exists" and the failure is invisible.
+    ln -sfn "${ASSETS}" "${PKGVAR}/assets" 2>/dev/null || true
+
+    # A stale socket from an unclean shutdown blocks the new listener.
+    rm -f "${SOCK}" 2>/dev/null || true
+    rm -f "${PIDFILE}" 2>/dev/null || true
+
+    log_msg "start: launching ${BIN} (log-level=${log_level}, ipv6-support=${ipv6_support})"
+
+    # Runs as root (config/privilege -> run-as: root): TUN and transparent proxy
+    # need CAP_NET_ADMIN and write access to /dev/net/tun.
+    #
+    # --nftables-support off: fnOS ships nftables 1.0.6, whose parser rejects the
+    # named priority constants v2rayA emits for its DNS-redirect chain
+    # ("type nat hook output priority dstnat - 1" -> "invalid priority
+    # expression value"). Forcing the iptables path produces equivalent
+    # REDIRECT/TPROXY rules that this kernel accepts.
+    #
+    # --v2ray-assetsdir configures v2rayA only; it is NOT inherited by the core,
+    # which resolves geosite.dat/geoip.dat from its own working directory unless
+    # XRAY_LOCATION_ASSET / V2RAY_LOCATION_ASSET is set. Export both.
+    export XRAY_LOCATION_ASSET="${ASSETS}"
+    export V2RAY_LOCATION_ASSET="${ASSETS}"
+    (
+        cd "${PKGVAR}" || exit 1
+        exec nohup "${BIN}" \
+            --socket "${SOCK}" \
+            --baseurl "${BASEURL}" \
+            --config "${DATADIR}" \
+            --v2ray-bin "${CORE}" \
+            --v2ray-assetsdir "${ASSETS}" \
+            --log-file "${LOGFILE}" \
+            --log-max-days 3 \
+            --log-level "${log_level}" \
+            --ipv6-support "${ipv6_support}" \
+            --nftables-support off \
+            >>"${STDOUT_LOG}" 2>&1 </dev/null
+    ) &
+    local pid=$!
+    printf '%s\n' "${pid}" > "${PIDFILE}" 2>/dev/null || true
+
+    if wait_ready "${pid}"; then
+        log_msg "start: ready (pid=${pid})"
+        return 0
+    fi
+
+    # ---- failure: collect genuinely useful diagnostics ----
+    local alive="no"
+    kill -0 "${pid}" 2>/dev/null && alive="yes"
+    kill -TERM "${pid}" 2>/dev/null || true
+    local w=0
+    while kill -0 "${pid}" 2>/dev/null && [ "${w}" -lt 5 ]; do
+        sleep 1
+        w=$((w + 1))
+    done
+    kill -KILL "${pid}" 2>/dev/null || true
+    rm -f "${PIDFILE}" "${SOCK}" 2>/dev/null || true
+
+    if [ -n "${TEMP_LOG}" ]; then
+        {
+            printf 'v2rayA failed to become ready within %ss.\n' "${HEALTH_TIMEOUT}"
+            printf 'process alive at timeout: %s\n' "${alive}"
+            printf 'socket: %s (exists: %s)\n' "${SOCK}" "$([ -S "${SOCK}" ] && echo yes || echo no)"
+            printf 'binary: %s\n' "${BIN}"
+            printf 'data dir: %s\n' "${DATADIR}"
+            if command -v curl >/dev/null 2>&1; then
+                printf 'curl: %s (api/version probe)\n' \
+                    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 --unix-socket "${SOCK}" "http://localhost${BASEURL}/api/version" 2>&1)"
+            else
+                printf 'curl: NOT AVAILABLE on this system\n'
+            fi
+            printf -- '---- %s (last 30 lines) ----\n' "${LOGFILE}"
+            tail -n 30 "${LOGFILE}" 2>/dev/null || printf '(no log file)\n'
+            printf -- '---- %s (last 20 lines) ----\n' "${STDOUT_LOG}"
+            tail -n 20 "${STDOUT_LOG}" 2>/dev/null || printf '(no stdout log)\n'
+        } > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    log_msg "start: FAILED to become ready (pid=${pid}, alive=${alive})"
+    printf 'v2rayA failed to start within %ss. See %s and %s\n' \
+        "${HEALTH_TIMEOUT}" "${LOGFILE}" "${STDOUT_LOG}" >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+do_stop() {
+    local pid
+    if pid=$(read_pidfile); then
+        kill_ours "${pid}"
+    fi
+    # Also reap any orphan that lost its pidfile (scoped to our socket).
+    for pid in $(pids_by_socket); do
+        kill_ours "${pid}"
+    done
+    rm -f "${PIDFILE}" "${SOCK}" 2>/dev/null || true
+    log_msg "stop: stopped"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    start)
+        do_start || exit 1
+        exit 0
+        ;;
+    stop)
+        do_stop || exit 1
+        exit 0
+        ;;
+    status)
+        if status_running; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        printf 'Usage: %s {start|stop|status}\n' "${0##*/}" >&2
+        exit 1
+        ;;
+esac

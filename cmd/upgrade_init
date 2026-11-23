@@ -1,0 +1,39 @@
+#!/bin/bash
+# Called BEFORE an upgrade. Stop the old instance so the binaries on disk are
+# not in use while they are replaced. Idempotent.
+set -u
+
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+OLD_VER="${TRIM_OLD_APPVER:-}"
+NEW_VER="${TRIM_APPVER:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${APPDEST}" ] || fail "TRIM_APPDEST is not set"
+
+# Re-use cmd/main so there is exactly one implementation of the stop logic.
+# Lifecycle scripts are always invoked from the cmd/ directory that holds it.
+MAIN="$(cd "$(dirname "${0}")" 2>/dev/null && pwd)/main"
+if [ ! -x "${MAIN}" ]; then
+    MAIN="$(dirname "${0}")/main"
+fi
+
+if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+    printf '%s - upgrade_init: %s -> %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${OLD_VER:-unknown}" "${NEW_VER:-unknown}" \
+        >> "${PKGVAR}/main.log" 2>/dev/null || true
+fi
+
+if [ -x "${MAIN}" ]; then
+    "${MAIN}" stop || fail "failed to stop the running instance before upgrade"
+fi
+
+exit 0

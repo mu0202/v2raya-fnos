@@ -1,0 +1,15 @@
+[
+    {
+        "stepTitle": "欢迎使用 v2rayA",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "v2rayA 将以 root 权限运行，以支持透明代理与 TUN 模式（TUN 需要 CAP_NET_ADMIN 与 /dev/net/tun，普通用户权限下核心会直接退出）。若你只用 SOCKS5/HTTP 代理，不用透明代理，root 权限同样可用但不必要。账户在首次打开应用时创建，无需在此填写密码。"
+            },
+            {
+                "type": "tips",
+                "helpText": "日志保存在应用数据目录，可通过「设置」调整日志级别与 IPv6 开关。"
+            }
+        ]
+    }
+]

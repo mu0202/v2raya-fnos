@@ -1,0 +1,30 @@
+#!/bin/bash
+# Called BEFORE uninstall. Stop the daemon so the app directory is not in use.
+# Idempotent.
+set -u
+
+APPDEST="${TRIM_APPDEST:-}"
+PKGVAR="${TRIM_PKGVAR:-}"
+TEMP_LOG="${TRIM_TEMP_LOGFILE:-}"
+
+fail() {
+    if [ -n "${TEMP_LOG}" ]; then
+        printf 'v2rayA: %s\n' "$1" > "${TEMP_LOG}" 2>/dev/null || true
+    fi
+    printf 'v2rayA: %s\n' "$1" >&2
+    exit 1
+}
+
+[ -n "${APPDEST}" ] || fail "TRIM_APPDEST is not set"
+
+MAIN="$(cd "$(dirname "${0}")" 2>/dev/null && pwd)/main"
+if [ -x "${MAIN}" ]; then
+    "${MAIN}" stop || fail "failed to stop the running instance before uninstall"
+fi
+
+if [ -n "${PKGVAR}" ] && [ -d "${PKGVAR}" ]; then
+    printf '%s - uninstall_init: daemon stopped\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+        >> "${PKGVAR}/main.log" 2>/dev/null || true
+fi
+
+exit 0

@@ -1,0 +1,29 @@
+# --- Vendored binaries (not part of this project's source) --------------------
+# Upstream v2rayA release artifacts. Re-fetched by scripts/fetch-payload.sh.
+# Keeping them out of git avoids a ~63 MB history and any ambiguity about
+# which licence/commit they came from.
+app/server/v2raya
+app/server/v2raya_core
+
+# --- Vendored geo/rule data (large, upstream-published, regenerated) ----------
+app/assets/*.dat
+
+# --- Build output ------------------------------------------------------------
+dist/
+*.fpk
+*.tgz
+
+# --- Runtime / local state ---------------------------------------------------
+*.log
+*.pid
+*.sock
+.venv/
+__pycache__/
+*.pyc
+
+# --- Editors / OS ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
