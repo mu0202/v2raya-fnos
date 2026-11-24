@@ -2,7 +2,7 @@
 # ===========================================================================
 # build.sh — packaging pipeline for the v2rayA fnOS application
 #
-# Contract: docs/INTEGRATION-CONTRACT.md §9
+# See docs/ARCHITECTURE.md for the packaging design.
 #
 # Produces: dist/v2raya_<version>_x86.fpk
 #

@@ -5,7 +5,7 @@
 # Sourced, never executed. Provides PASS/FAIL accounting, a cleanup registry
 # that survives early exits, and small probes (PNG dims, HTTP status, JSON).
 #
-# Contract: docs/INTEGRATION-CONTRACT.md §10
+# See docs/ARCHITECTURE.md for the overall design.
 #
 # Design notes (measured on this box, fnOS 1.2.1102 / x86_64):
 #   * No set -e here. Test scripts must be able to run every assertion and
