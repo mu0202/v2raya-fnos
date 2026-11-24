@@ -19,7 +19,7 @@
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载 `v2raya_<version>_x86.fpk`
+1. 从 [Releases](https://github.com/mu0202/v2raya-fnos/releases/latest) 下载 `v2raya_<version>_x86.fpk`
 2. 飞牛 **应用中心 → 手动安装**，选择该文件
 3. 首次打开时在页面内创建管理员账户
 
