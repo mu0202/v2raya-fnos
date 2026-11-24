@@ -1,4 +1,4 @@
-# v2rayA for 飞牛 fnOS
+# v2rayA for fnOS
 
 将 [v2rayA](https://github.com/v2rayA/v2rayA) 打包为飞牛 fnOS 原生 `.fpk` 应用。
 从桌面点击图标即可打开其 Web 界面，通过系统统一网关接入，复用飞牛登录态，
